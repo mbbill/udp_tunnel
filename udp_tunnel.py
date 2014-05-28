@@ -106,7 +106,7 @@ def do_server():
     # external server
     ext_server = (sip,sport)
     ext_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    ext_sock.setblocking(1)
+    ext_sock.setblocking(0)
     ext_sock.bind(('',0))
     # this tunnel
     socks = []
@@ -114,7 +114,7 @@ def do_server():
     cmd_addr = None
     for port in range(lport,lport+lnum):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setblocking(1)
+        sock.setblocking(0)
         addr = ('',port)
         sock.bind(addr)
         socks.append(sock)
@@ -175,7 +175,7 @@ def do_server():
 def do_client():
     client_addr = None
     client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    client_sock.setblocking(1)
+    client_sock.setblocking(0)
     client_sock.bind(('',cport))
     print "Listening on port " + str(cport)
 
@@ -183,7 +183,7 @@ def do_client():
     cmd_sock = None
     for port in range(clport, clport+cspnum):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setblocking(1)
+        sock.setblocking(0)
         addr = ('',port)
         sock.bind(addr)
         socks.append(sock)
