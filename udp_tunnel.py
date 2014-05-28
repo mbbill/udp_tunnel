@@ -132,12 +132,19 @@ def do_server():
                     continue
             elif sock == ext_sock:
                 if verified_addr != None:
-                    from_sock = random.randint(1,lnum-2)
-                    to_port = verified_ports[random.randint(0,len(verified_ports)-1)]
+                    from_sock = random.randint(2,lnum-1)
+                    if len(verified_ports) != 0:
+                        to_port = verified_ports[random.randint(0,len(verified_ports)-1)]
+                    else:
+                        print "Client please talk first."
+                        continue
                     socks[from_sock].sendto(data, (verified_addr, to_port))
+                    print str(socks[from_sock].getsockname()[1]) + ' -> ' + str(to_port)
             elif verified_addr != None: #verified
+                if not addr[1] in verified_ports:
                     verified_ports.append(addr[1])
-                    ext_sock.sendto(data,ext_server)
+                print str(sock.getsockname()[1]) + ' <- ' + str(addr[1])
+                ext_sock.sendto(data,ext_server)
             else:
                 print 'packet dropped: ' + addr[0] + ':' + str(addr[1])
 
@@ -174,16 +181,18 @@ def do_client():
 
     while True:
         readble,_,_ = select.select(socks,[],[])
+        # socks[0]: client, socks[1]:cmd
         for sock in readble:
             data, addr = sock.recvfrom(2048)
             if sock == client_sock:
-                from_sock = random.randint(1,clpnum-2)
+                from_sock = random.randint(2,clpnum-1)
                 to_port = random.randint(csport+1,csport+cspnum-2)
                 socks[from_sock].sendto(data, (csip, to_port))
-                print str(from_sock) + '->' + str(to_port)
                 client_addr = addr
+                print str(socks[from_sock].getsockname()[1]) + ' -> ' + str(to_port)
             elif client_addr != None:
-                    client_sock.sendto(data, client_addr)
+                client_sock.sendto(data, client_addr)
+                print str(sock.getsockname()[1]) + ' <- ' + str(addr[1])
             else:
                 print 'packet dropped: ' + addr[0] + str(addr[1])
 
