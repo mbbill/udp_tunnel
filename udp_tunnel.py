@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# Author Ming, Bai
 import argparse
 import json
 import random
@@ -89,8 +90,9 @@ def hash(passwd):
 
 def do_server():
     verified_addr = None
-    verified_port = None
-    verified_portnum = None
+    # Everytime we receive a packet, write down its port,
+    # therefore when sending packets back we can reuse them, workaround for NAT
+    verified_ports = []
     # external server
     ext_server = (sip,sport)
     ext_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -99,6 +101,7 @@ def do_server():
     # this tunnel
     socks = [ext_sock]
     cmd_sock = None
+    cmd_addr = None
     for port in range(lport,lport+lnum):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setblocking(0)
@@ -122,17 +125,18 @@ def do_server():
                     continue
                 if decoded['passwd'] == hash(passwd):
                     verified_addr = addr[0]
-                    verified_port = decoded['port']
-                    verified_portnum = decoded['portnum']
                     sock.sendto('OK',addr)
+                    cmd_addr = addr
+                    verified_ports = [] # clear previous logged ports
                     print "Client connected: " + addr[0]
                     continue
             elif sock == ext_sock:
                 if verified_addr != None:
-                    socks[random.randint(1,lnum-2)].sendto(data,
-                            (verified_addr,random.randint(verified_port+1,
-                                verified_port+verified_portnum-2)))
+                    from_sock = random.randint(1,lnum-2)
+                    to_port = verified_ports[random.randint(0,len(verified_ports)-1)]
+                    socks[from_sock].sendto(data, (verified_addr, to_port))
             elif verified_addr != None: #verified
+                    verified_ports.append(addr[1])
                     ext_sock.sendto(data,ext_server)
             else:
                 print 'packet dropped: ' + addr[0] + ':' + str(addr[1])
@@ -173,8 +177,10 @@ def do_client():
         for sock in readble:
             data, addr = sock.recvfrom(2048)
             if sock == client_sock:
-                socks[random.randint(1,clpnum-2)].sendto(data,
-                        (csip,random.randint(csport+1,csport+cspnum-2)))
+                from_sock = random.randint(1,clpnum-2)
+                to_port = random.randint(csport+1,csport+cspnum-2)
+                socks[from_sock].sendto(data, (csip, to_port))
+                print str(from_sock) + '->' + str(to_port)
                 client_addr = addr
             elif client_addr != None:
                     client_sock.sendto(data, client_addr)
