@@ -90,6 +90,13 @@ def hash(passwd):
     digest = sha.new(passwd+salt).hexdigest()
     return digest
 
+def encode(data):
+    # simple xor encode to fool the g.f.w
+    b = bytearray(data)
+    for i in range(len(b)):
+        b[i] ^= 0
+    return str(b)
+
 def do_server():
     verified_addr = None
     # Everytime we receive a packet, write down its port,
@@ -99,7 +106,7 @@ def do_server():
     # external server
     ext_server = (sip,sport)
     ext_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    ext_sock.setblocking(0)
+    ext_sock.setblocking(1)
     ext_sock.bind(('',0))
     # this tunnel
     socks = []
@@ -107,7 +114,7 @@ def do_server():
     cmd_addr = None
     for port in range(lport,lport+lnum):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setblocking(0)
+        sock.setblocking(1)
         addr = ('',port)
         sock.bind(addr)
         socks.append(sock)
@@ -115,6 +122,8 @@ def do_server():
             cmd_sock = sock # user the 1st sock to pass command
     socks.append(ext_sock)
 
+    rx = 0
+    tx = 0
     print 'Server listening on port [' + str(lport) + '-' + str(lport+lnum-1) + ']'
     while True:
         readble,_,_ = select.select(socks,[],[])
@@ -133,6 +142,8 @@ def do_server():
                     cmd_addr = addr
                     used_ports = [] # clear logged connections
                     used_socks = []
+                    rx = 0
+                    tx = 0
                     print "Client connected: " + addr[0]
                     continue
             elif sock == ext_sock:
@@ -147,14 +158,16 @@ def do_server():
                     else:
                         print "Client please talk first."
                         continue
-                    to_sock.sendto(data, (verified_addr, to_port))
-                    print str(to_sock.getsockname()[1]) + ' -> ' + str(to_port)
+                    to_sock.sendto(encode(data), (verified_addr, to_port))
+                    tx += 1
+                    print str(to_sock.getsockname()[1]) + ' -> ' + str(to_port) + ' tx: ' + str(tx)
             elif verified_addr != None: #verified
                 if not sock in used_socks:
                     used_socks.append(sock)
                     used_ports.append(addr[1])
-                print str(sock.getsockname()[1]) + ' <- ' + str(addr[1])
-                ext_sock.sendto(data,ext_server)
+                ext_sock.sendto(encode(data),ext_server)
+                rx += 1
+                print str(sock.getsockname()[1]) + ' <- ' + str(addr[1]) + ' rx: ' + str(rx)
             else:
                 print 'packet dropped: ' + addr[0] + ':' + str(addr[1])
 
@@ -162,7 +175,7 @@ def do_server():
 def do_client():
     client_addr = None
     client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    client_sock.setblocking(0)
+    client_sock.setblocking(1)
     client_sock.bind(('',cport))
     print "Listening on port " + str(cport)
 
@@ -170,7 +183,7 @@ def do_client():
     cmd_sock = None
     for port in range(clport, clport+cspnum):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setblocking(0)
+        sock.setblocking(1)
         addr = ('',port)
         sock.bind(addr)
         socks.append(sock)
@@ -190,6 +203,8 @@ def do_client():
                 print 'Connected.'
                 break
 
+    rx = 0
+    tx = 0
     while True:
         readble,_,_ = select.select(socks,[],[])
         for sock in readble:
@@ -198,12 +213,14 @@ def do_client():
                 rnd = random.randint(1,cspnum-1)
                 from_sock = socks[rnd]
                 to_port = csport+rnd
-                from_sock.sendto(data, (csip, to_port))
+                from_sock.sendto(encode(data), (csip, to_port))
                 client_addr = addr
-                print str(from_sock.getsockname()[1]) + ' -> ' + str(to_port)
+                tx += 1
+                print str(from_sock.getsockname()[1]) + ' -> ' + str(to_port) + ' tx: ' + str(tx)
             elif client_addr != None:
-                client_sock.sendto(data, client_addr)
-                print str(sock.getsockname()[1]) + ' <- ' + str(addr[1])
+                client_sock.sendto(encode(data), client_addr)
+                rx += 1
+                print str(sock.getsockname()[1]) + ' <- ' + str(addr[1]) + ' rx: ' + str(rx)
             else:
                 print 'packet dropped: ' + addr[0] + str(addr[1])
 
