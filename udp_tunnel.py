@@ -22,7 +22,7 @@ import time
 # OVPN(10.2.3.4:1234) <-> [this_script(10.2.3.4:[2000-3000])] <----> [this_script(192.1.1.2:5000-6000) - [port]] <-> [OVPN_CLIENT(192.1.1.2)]
 #      ^sip     ^sport                           ^lport(lnum)
 # for client
-#                                      ^csip     ^csport(cspnum)                            ^clport(clpnum) ^cport
+#                                      ^csip     ^csport(cspnum)                            ^clport(cspnum) ^cport
 
 ################################
 # Parse command line args
@@ -39,7 +39,6 @@ parser.add_argument('--csip', help = 'Tunnel server address')
 parser.add_argument('--csport', type = int, help = 'Tunnel server starting port')
 parser.add_argument('--cspnum', type = int, help = 'Number of ports, starting from <csport>')
 parser.add_argument('--clport', type = int, help = 'Client starting port')
-parser.add_argument('--clpnum', type = int, help = 'Number of ports, starting from <clport>')
 parser.add_argument('--cport', type = int, help = 'Client listen port')
 args = parser.parse_args()
 
@@ -68,7 +67,6 @@ else:
     csport = args.csport
     cspnum = args.cspnum
     clport = args.clport
-    clpnum = args.clpnum
     cport = args.cport
     if csip == None:
         print "--csip <address>"
@@ -82,11 +80,6 @@ else:
         exit(-1)
     if clport == None:
         clport = 41000
-    if clpnum == None:
-        clpnum = 1000
-    if clpnum < 2:
-        print "clpnum should >= 2"
-        exit(-1)
     if cport == None:
         cport = 21000
 
@@ -101,7 +94,8 @@ def do_server():
     verified_addr = None
     # Everytime we receive a packet, write down its port,
     # therefore when sending packets back we can reuse them, workaround for NAT
-    verified_ports = []
+    used_socks = []
+    used_ports = []
     # external server
     ext_server = (sip,sport)
     ext_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -137,22 +131,28 @@ def do_server():
                     verified_addr = addr[0]
                     sock.sendto('OK',addr)
                     cmd_addr = addr
-                    verified_ports = [] # clear previous logged ports
+                    used_ports = [] # clear logged connections
+                    used_socks = []
                     print "Client connected: " + addr[0]
                     continue
             elif sock == ext_sock:
                 if verified_addr != None:
                     from_sock = random.randint(1,lnum-1)
-                    if len(verified_ports) != 0:
-                        to_port = verified_ports[random.randint(0,len(verified_ports)-1)]
+                    used_len = len(used_socks)
+                    if used_len != 0:
+                        # pick a used socket
+                        rnd = random.randint(0, used_len-1)
+                        to_sock = used_socks[rnd]
+                        to_port = used_ports[rnd]
                     else:
                         print "Client please talk first."
                         continue
-                    socks[from_sock].sendto(data, (verified_addr, to_port))
-                    print str(socks[from_sock].getsockname()[1]) + ' -> ' + str(to_port)
+                    to_sock.sendto(data, (verified_addr, to_port))
+                    print str(to_sock.getsockname()[1]) + ' -> ' + str(to_port)
             elif verified_addr != None: #verified
-                if not addr[1] in verified_ports:
-                    verified_ports.append(addr[1])
+                if not sock in used_socks:
+                    used_socks.append(sock)
+                    used_ports.append(addr[1])
                 print str(sock.getsockname()[1]) + ' <- ' + str(addr[1])
                 ext_sock.sendto(data,ext_server)
             else:
@@ -168,7 +168,7 @@ def do_client():
 
     socks = []
     cmd_sock = None
-    for port in range(clport, clport+clpnum):
+    for port in range(clport, clport+cspnum):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setblocking(0)
         addr = ('',port)
@@ -178,7 +178,7 @@ def do_client():
             cmd_sock = sock # user the 1st sock to pass command
     socks.append(client_sock)
 
-    jsondata = {'passwd':hash(passwd), 'port':clport,'portnum':clpnum}
+    jsondata = {'passwd':hash(passwd), 'port':clport,'portnum':cspnum}
     datastr = json.dumps(jsondata)
     while True:
         print 'Connecting to: ' + csip + ':' + str(csport)
@@ -195,11 +195,12 @@ def do_client():
         for sock in readble:
             data, addr = sock.recvfrom(2048)
             if sock == client_sock:
-                from_sock = random.randint(1,clpnum-1)
-                to_port = random.randint(csport+1,csport+cspnum-1)
-                socks[from_sock].sendto(data, (csip, to_port))
+                rnd = random.randint(1,cspnum-1)
+                from_sock = socks[rnd]
+                to_port = csport+rnd
+                from_sock.sendto(data, (csip, to_port))
                 client_addr = addr
-                print str(socks[from_sock].getsockname()[1]) + ' -> ' + str(to_port)
+                print str(from_sock.getsockname()[1]) + ' -> ' + str(to_port)
             elif client_addr != None:
                 client_sock.sendto(data, client_addr)
                 print str(sock.getsockname()[1]) + ' <- ' + str(addr[1])
