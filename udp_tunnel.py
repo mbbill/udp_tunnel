@@ -94,7 +94,7 @@ def encode(data):
     # simple xor encode to fool the g.f.w
     b = bytearray(data)
     for i in range(len(b)):
-        b[i] ^= 0
+        b[i] ^= 1
     return str(b)
 
 def do_server():
