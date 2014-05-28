@@ -60,6 +60,9 @@ if args.mode == 'server':
         lport = 31000 #default
     if lnum == None:
         lnum = 1000
+    if lnum < 2:
+        print "lnum should >= 2"
+        exit(-1)
 else:
     csip = args.csip
     csport = args.csport
@@ -74,10 +77,16 @@ else:
         csport = 31000
     if cspnum == None:
         cspnum = 1000
+    if cspnum < 2:
+        print "cspnum should >= 2"
+        exit(-1)
     if clport == None:
         clport = 41000
     if clpnum == None:
         clpnum = 1000
+    if clpnum < 2:
+        print "clpnum should >= 2"
+        exit(-1)
     if cport == None:
         cport = 21000
 
@@ -99,7 +108,7 @@ def do_server():
     ext_sock.setblocking(0)
     ext_sock.bind(('',0))
     # this tunnel
-    socks = [ext_sock]
+    socks = []
     cmd_sock = None
     cmd_addr = None
     for port in range(lport,lport+lnum):
@@ -110,6 +119,7 @@ def do_server():
         socks.append(sock)
         if (port == lport):
             cmd_sock = sock # user the 1st sock to pass command
+    socks.append(ext_sock)
 
     print 'Server listening on port [' + str(lport) + '-' + str(lport+lnum-1) + ']'
     while True:
@@ -132,7 +142,7 @@ def do_server():
                     continue
             elif sock == ext_sock:
                 if verified_addr != None:
-                    from_sock = random.randint(2,lnum-1)
+                    from_sock = random.randint(1,lnum-1)
                     if len(verified_ports) != 0:
                         to_port = verified_ports[random.randint(0,len(verified_ports)-1)]
                     else:
@@ -156,7 +166,7 @@ def do_client():
     client_sock.bind(('',cport))
     print "Listening on port " + str(cport)
 
-    socks = [client_sock]
+    socks = []
     cmd_sock = None
     for port in range(clport, clport+clpnum):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -166,6 +176,7 @@ def do_client():
         socks.append(sock)
         if port == clport:
             cmd_sock = sock # user the 1st sock to pass command
+    socks.append(client_sock)
 
     jsondata = {'passwd':hash(passwd), 'port':clport,'portnum':clpnum}
     datastr = json.dumps(jsondata)
@@ -181,12 +192,11 @@ def do_client():
 
     while True:
         readble,_,_ = select.select(socks,[],[])
-        # socks[0]: client, socks[1]:cmd
         for sock in readble:
             data, addr = sock.recvfrom(2048)
             if sock == client_sock:
-                from_sock = random.randint(2,clpnum-1)
-                to_port = random.randint(csport+1,csport+cspnum-2)
+                from_sock = random.randint(1,clpnum-1)
+                to_port = random.randint(csport+1,csport+cspnum-1)
                 socks[from_sock].sendto(data, (csip, to_port))
                 client_addr = addr
                 print str(socks[from_sock].getsockname()[1]) + ' -> ' + str(to_port)
