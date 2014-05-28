@@ -58,7 +58,7 @@ if args.mode == 'server':
     if lport == None:
         lport = 31000 #default
     if lnum == None:
-        lnum = 1000
+        lnum = 10
     if lnum < 2:
         print "lnum should >= 2"
         exit(-1)
@@ -74,7 +74,7 @@ else:
     if csport == None:
         csport = 31000
     if cspnum == None:
-        cspnum = 1000
+        cspnum = 10
     if cspnum < 2:
         print "cspnum should >= 2"
         exit(-1)
@@ -194,7 +194,7 @@ def do_client():
     jsondata = {'passwd':hash(passwd), 'port':clport,'portnum':cspnum}
     datastr = json.dumps(jsondata)
     while True:
-        print 'Connecting to: ' + csip + ':' + str(csport)
+        print 'Connecting to: ' + csip + ': [' + str(csport) + '-' + str(csport+cspnum-1) + ']'
         cmd_sock.sendto(datastr, (csip,csport))
         readble,_,_ = select.select([cmd_sock],[],[],5)
         if len(readble) != 0:
