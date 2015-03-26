@@ -8,82 +8,53 @@ import sha
 import socket
 import sys
 import time
+import pytun
 
 ################################
-# let's say you connect to your server like this:
-#
-# [server address : server UDP port]  < ------ > [client address : client UDP port]
-#
-# Now, it becomes:
-#
-# [server address : server UDP port] <--> [server address : [.....a lot of udp ports....]] < -------- > [ client address : [ ... a lot of ports ...]]  <----> [client address : client UDP port]
-#
-# example:
-# OVPN(10.2.3.4:1234) <-> [this_script(10.2.3.4:[2000-3000])] <----> [this_script(192.1.1.2:5000-6000) - [port]] <-> [OVPN_CLIENT(192.1.1.2)]
-#      ^sip     ^sport                           ^lport(lnum)
-# for client
-#                                      ^csip     ^csport(cspnum)                            ^clport(cspnum) ^cport
+# tun <--> client [cmd port; data port0 ... data portn] <====> server [cmd port; data port0 ... data port n] <--> tun
 
 ################################
 # Parse command line args
 parser = argparse.ArgumentParser(description='UDP Tunnel, give --help for more info.')
 parser.add_argument('--mode', help = 'Server mode (server or client)', required=True)
-parser.add_argument('--passwd', help = 'Password', required=True)
-# Server mode arguments
 parser.add_argument('--sip', help = 'Server ip address')
 parser.add_argument('--sport', type = int, help = 'Server port')
-parser.add_argument('--lport', type = int, help = 'Listen port start')
-parser.add_argument('--lnum', type = int, help = 'Number of listen ports, starting from <lport>')
-# Client mode arguments
-parser.add_argument('--csip', help = 'Tunnel server address')
-parser.add_argument('--csport', type = int, help = 'Tunnel server starting port')
-parser.add_argument('--cspnum', type = int, help = 'Number of ports, starting from <csport>')
-parser.add_argument('--clport', type = int, help = 'Client starting port')
-parser.add_argument('--cport', type = int, help = 'Client listen port')
+parser.add_argument('--snum', type = int, help = 'Number of listen ports, starting from port+1')
+# client mode
+parser.add_argument('--lip', help = 'Bind local ip address')
+parser.add_argument('--lport', type = int, help = 'Server port')
+parser.add_argument('--lnum', type = int, help = 'Number of listen ports, starting from port+1')
 args = parser.parse_args()
 
-passwd = args.passwd
 mode = args.mode
-if args.mode == 'server':
-    sip = args.sip
-    sport = args.sport
-    lport = args.lport
-    lnum = args.lnum
-    if sip == None:
-        print "--sip <address>"
-        exit(-1)
-    if sport == None:
-        print "--sport <port>"
-        exit(-1)
-    if lport == None:
-        lport = 31000 #default
-    if lnum == None:
-        lnum = 10
-    if lnum < 2:
-        print "lnum should >= 2"
-        exit(-1)
-else:
-    csip = args.csip
-    csport = args.csport
-    cspnum = args.cspnum
-    clport = args.clport
-    cport = args.cport
-    if csip == None:
-        print "--csip <address>"
-        exit(-1)
-    if csport == None:
-        csport = 31000
-    if cspnum == None:
-        cspnum = 10
-    if cspnum < 2:
-        print "cspnum should >= 2"
-        exit(-1)
-    if clport == None:
-        clport = 41000
-    if cport == None:
-        cport = 21000
 
-# check args
+sip = args.sip
+sport = args.sport
+snum = args.snum
+lip = args.lip
+lport = args.lport
+lnum = args.lnum
+
+if sip == None:
+    print "--ip <address>"
+    exit(-1)
+if mode == "client" and lip == None:
+    print "--lip <address>"
+    exit(-1)
+if sport == None:
+    sport = 10000;
+if snum == None:
+    snum = 10
+if snum < 1:
+    print "num should >= 1"
+    exit(-1)
+if lport == None:
+    lport = 20000;
+if lnum == None:
+    lnum = 10
+if lnum < 1:
+    print "lnum should >= 1"
+    exit(-1)
 
 def hash(passwd):
     salt = '!@#$%^&*(@#$%^&*(ERTYHGBNfiuwqpoif'
@@ -97,134 +68,154 @@ def encode(data):
         b[i] ^= 1
     return str(b)
 
+def tun_setup():
+    tun = None
+    if mode == "server":
+        tun = pytun.TunTapDevice("stun")
+        tun.addr = "10.9.0.1"
+        tun.dstaddr = "10.9.0.2"
+    else:
+        tun = pytun.TunTapDevice("ctun")
+        tun.addr = "10.9.0.2"
+        tun.dstaddr = "10.9.0.1"
+    tun.netmask = "255.255.255.0"
+    tun.mtu=1300
+    tun.up()
+    return tun
+
 def do_server():
-    verified_addr = None
-    # Everytime we receive a packet, write down its port,
-    # therefore when sending packets back we can reuse them, workaround for NAT
-    used_socks = []
-    used_ports = []
-    # external server
-    ext_server = (sip,sport)
-    ext_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    ext_sock.setblocking(0)
-    ext_sock.bind(('',0))
+    server = (sip, sport)
+    cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    cmd_sock.setblocking(0)
+    try:
+        cmd_sock.bind(server)
+    except socket.error, msg:
+        print "Bind failed. Error: " + str(msg[0]) + " " + msg[1]
+        sys.exit(1)
+
     # this tunnel
-    socks = []
-    cmd_sock = None
-    cmd_addr = None
-    for port in range(lport,lport+lnum):
+    fds = [cmd_sock]
+    for port in range(sport+1,sport+1+snum):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setblocking(0)
-        addr = ('',port)
-        sock.bind(addr)
-        socks.append(sock)
-        if (port == lport):
-            cmd_sock = sock # user the 1st sock to pass command
-    socks.append(ext_sock)
+        try:
+            sock.bind((sip, port))
+        except socket.error, msg:
+            print "Bind failed. Error: " + str(msg[0]) + " " + msg[1]
+            sys.exit(1)
+        fds.append(sock)
+    tunfd = tun_setup()
+    fds.append(tunfd)
 
-    rx = 0
-    tx = 0
-    print 'Server listening on port [' + str(lport) + '-' + str(lport+lnum-1) + ']'
+    print "Command port [" + str(sport) + "]"
+    print "Data ports [" + str(sport+1) + "-" + str(sport+1+snum) + "]"
+    print "Server running..."
+    client_ip = None
+    client_port = None
+    client_num = None
     while True:
-        readble,_,_ = select.select(socks,[],[])
-        for sock in readble:
-            data, addr = sock.recvfrom(2048)
-            if sock == cmd_sock:
+        readble,_,_ = select.select(fds,[],[])
+        for fd in readble:
+            if fd == cmd_sock:
+                data, addr = fd.recvfrom(2048)
+                jsondata = {'num':snum,'status':'OK'}
+                datastr = json.dumps(jsondata)
                 # verify
                 try:
                     decoded = json.loads(data)
                 except:
                     print "Command error."
                     continue
-                if decoded['passwd'] == hash(passwd):
-                    verified_addr = addr[0]
-                    sock.sendto('OK',addr)
-                    cmd_addr = addr
-                    used_ports = [] # clear logged connections
-                    used_socks = []
-                    rx = 0
-                    tx = 0
-                    print "Client connected: " + addr[0]
+                client_num = int(decoded['num'])
+                client_port = addr[1]
+                if (client_num + client_port > 65535):
+                    print "Port num error: " + client_num
                     continue
-            elif sock == ext_sock:
-                if verified_addr != None:
-                    from_sock = random.randint(1,lnum-1)
-                    used_len = len(used_socks)
-                    if used_len != 0:
-                        # pick a used socket
-                        rnd = random.randint(0, used_len-1)
-                        to_sock = used_socks[rnd]
-                        to_port = used_ports[rnd]
-                    else:
-                        print "Client please talk first."
-                        continue
-                    to_sock.sendto(encode(data), (verified_addr, to_port))
-                    tx += 1
-                    print str(to_sock.getsockname()[1]) + ' -> ' + str(to_port) + ' tx: ' + str(tx)
-            elif verified_addr != None: #verified
-                if not sock in used_socks:
-                    used_socks.append(sock)
-                    used_ports.append(addr[1])
-                ext_sock.sendto(encode(data),ext_server)
-                rx += 1
-                print str(sock.getsockname()[1]) + ' <- ' + str(addr[1]) + ' rx: ' + str(rx)
+                client_ip = addr[0]
+                # send back num
+                fd.sendto(datastr,addr)
+                print "Client connected: " + addr[0]
+            elif sock == tunfd:
+                # from tun
+                buf = tunfd.read(tunfd.mtu)
+                srnd = random.randint(1,snum)
+                to_port = random.randint(client_port+1, client_port+client_num)
+                to_sock = fds[srnd]
+                to_sock.sendto(buf, (server_ip, to_port))
+            elif client_ip != None:
+                data, addr = fd.recvfrom(2048)
+                tunfd.write(data)
+                continue
             else:
+                data, addr = fd.recvfrom(2048)
                 print 'packet dropped: ' + addr[0] + ':' + str(addr[1])
 
 
 def do_client():
-    client_addr = None
-    client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    client_sock.setblocking(0)
-    client_sock.bind(('',cport))
-    print "Listening on port " + str(cport)
+    cmd_addr = (lip, lport)
+    cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    cmd_sock.setblocking(0)
+    try:
+        cmd_sock.bind(cmd_addr)
+    except socket.error, msg:
+        print "Bind failed. Error: " + str(msg[0]) + " " + msg[1]
+        sys.exit(1)
 
-    socks = []
-    cmd_sock = None
-    for port in range(clport, clport+cspnum):
+    fds = [cmd_sock]
+    for port in range(lport+1,lport+1+lnum):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setblocking(0)
-        addr = ('',port)
-        sock.bind(addr)
-        socks.append(sock)
-        if port == clport:
-            cmd_sock = sock # user the 1st sock to pass command
-    socks.append(client_sock)
+        try:
+            sock.bind((lip, port))
+        except socket.error, msg:
+            print "Bind failed. Error: " + str(msg[0]) + " " + msg[1]
+            sys.exit(1)
+        fds.append(sock)
+    tunfd = tun_setup()
+    fds.append(tunfd)
 
-    jsondata = {'passwd':hash(passwd), 'port':clport,'portnum':cspnum}
+    print "Command port [" + str(lport) + "]"
+    print "Data ports [" + str(lport+1) + "-" + str(lport+1+lnum) + "]"
+    server_ip = sip
+    server_port = sport
+    server_num = None
+    server_addr = (sip, sport)
+
+    jsondata = {'num':lnum}
     datastr = json.dumps(jsondata)
     while True:
-        print 'Connecting to: ' + csip + ': [' + str(csport) + '-' + str(csport+cspnum-1) + ']'
-        cmd_sock.sendto(datastr, (csip,csport))
+        print 'Connecting to: ' + server_ip + ':' + str(server_port)
+        cmd_sock.sendto(datastr, server_addr)
         readble,_,_ = select.select([cmd_sock],[],[],5)
         if len(readble) != 0:
             data, addr = cmd_sock.recvfrom(2048)
-            if data == 'OK':
-                print 'Connected.'
+            decoded = json.loads(data)
+            server_num = int(decoded['num'])
+            if decoded['status'] == 'OK':
+                print 'Connected, server port num: ' + str(server_num)
                 break
 
-    rx = 0
-    tx = 0
     while True:
-        readble,_,_ = select.select(socks,[],[])
-        for sock in readble:
-            data, addr = sock.recvfrom(2048)
-            if sock == client_sock:
-                rnd = random.randint(1,cspnum-1)
-                from_sock = socks[rnd]
-                to_port = csport+rnd
-                from_sock.sendto(encode(data), (csip, to_port))
-                client_addr = addr
-                tx += 1
-                print str(from_sock.getsockname()[1]) + ' -> ' + str(to_port) + ' tx: ' + str(tx)
-            elif client_addr != None:
-                client_sock.sendto(encode(data), client_addr)
-                rx += 1
-                print str(sock.getsockname()[1]) + ' <- ' + str(addr[1]) + ' rx: ' + str(rx)
+        readble,_,_ = select.select(fds,[],[])
+        for fd in readble:
+            if sock == cmd_sock:
+                data, addr = fd.recvfrom(2048)
+                #heartbeat
+                continue
+            elif sock == tunfd:
+                #from tun
+                buf = tunfd.read(tunfd.mtu)
+                lrnd = random.randint(1,lnum)
+                to_port = random.randint(server_port+1, server_port+server_num)
+                to_sock = fds[lrnd]
+                to_sock.sendto(buf, (server_ip, to_port))
+                print "tun --> sock"
             else:
-                print 'packet dropped: ' + addr[0] + str(addr[1])
+                # from data socks
+                data, addr = fd.recvfrom(2048)
+                tunfd.write(data)
+                print "sock --> tun"
 
-    
 if mode == 'server':
     do_server()
 else:
