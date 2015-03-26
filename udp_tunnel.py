@@ -1,14 +1,17 @@
 #!/usr/bin/env python
 # Author Ming, Bai
+from Crypto import Random
+from Crypto.Cipher import AES
 import argparse
 import json
+import pytun
 import random
 import select
 import sha
 import socket
+import struct
 import sys
 import time
-import pytun
 
 ################################
 # tun <--> client [cmd port; data port0 ... data portn] <====> server [cmd port; data port0 ... data port n] <--> tun
@@ -17,9 +20,10 @@ import pytun
 # Parse command line args
 parser = argparse.ArgumentParser(description='UDP Tunnel, give --help for more info.')
 parser.add_argument('--mode', help = 'Server mode (server or client)', required=True)
-parser.add_argument('--sip', help = 'Server ip address')
+parser.add_argument('--host', help = 'Server hostname or ip address')
 parser.add_argument('--sport', type = int, help = 'Server port')
 parser.add_argument('--snum', type = int, help = 'Number of listen ports, starting from port+1')
+parser.add_argument('--passwd', help = 'Password, length must be multiple of 16')
 # client mode
 parser.add_argument('--lip', help = 'Bind local ip address')
 parser.add_argument('--lport', type = int, help = 'Server port')
@@ -28,16 +32,22 @@ args = parser.parse_args()
 
 mode = args.mode
 
-sip = args.sip
 sport = args.sport
 snum = args.snum
 lip = args.lip
 lport = args.lport
 lnum = args.lnum
+passwd = args.passwd
 
-if sip == None:
-    print "--ip <address>"
+try:
+    if args.host == None:
+        print "what's the hostname?"
+        exit(-1)
+    sip = socket.gethostbyname(args.host)
+except socket.error:
+    print "Cannot resolv " + str(args.sip)
     exit(-1)
+
 if mode == "client" and lip == None:
     print "--lip <address>"
     exit(-1)
@@ -55,27 +65,16 @@ if lnum == None:
 if lnum < 1:
     print "lnum should >= 1"
     exit(-1)
+if passwd == None:
+    print "No password?"
+    exit(-1)
+if len(passwd) < 16 or len(passwd)%16 != 0:
+    print "Password length must be multiple of 16"
+    exit(-1)
 
-def hash(passwd):
-    salt = '!@#$%^&*(@#$%^&*(ERTYHGBNfiuwqpoif'
-    digest = sha.new(passwd+salt).hexdigest()
-    return digest
-
-def encode(data):
-    # simple xor encode to fool the g.f.w
-    b = bytearray(data)
-    for i in range(len(b)):
-        b[i] ^= 1
-    return str(b)
-
-def print_hex(data):
-    print "Data: " + str(len(data)) + " bytes"
-    #print "Data: " + str(data)
-    #print ':'.join(x.encode('hex') for x in data)
-
-def tun_setup():
+def tun_setup(is_server):
     tun = None
-    if mode == "server":
+    if is_server == True:
         tun = pytun.TunTapDevice("stun")
         tun.addr = "10.9.0.1"
         tun.dstaddr = "10.9.0.2"
@@ -88,148 +87,236 @@ def tun_setup():
     tun.up()
     return tun
 
-def do_server():
-    server = (sip, sport)
-    cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    cmd_sock.setblocking(0)
-    try:
-        cmd_sock.bind(server)
-    except socket.error, msg:
-        print "Bind failed. Error: " + str(msg[0]) + " " + msg[1]
-        sys.exit(1)
 
-    # this tunnel
-    fds = [cmd_sock]
-    for port in range(sport+1,sport+1+snum):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setblocking(0)
+class AESCipher:
+    def __init__( self, key ):
+        self.BS = 16
+        self.key = key
+
+    def pad(self, raw):
+        #two bytes length,+padded data
+        lenbytes = struct.pack('<H', len(raw))
+        padding = 'x' * (self.BS - (len(raw)+2)%self.BS)
+        return lenbytes + raw + padding
+
+    def unpad(self, data):
+        datalen = struct.unpack('<H', data[:2])[0]
+        return data[2:2+datalen]
+
+    def encrypt( self, raw ):
+        raw = self.pad(raw)
+        iv = Random.new().read( AES.block_size )
+        cipher = AES.new( self.key, AES.MODE_CBC, iv )
+        return iv+cipher.encrypt(raw)
+
+    def decrypt( self, enc ):
+        iv = enc[:16]
+        cipher = AES.new(self.key, AES.MODE_CBC, iv )
+        return self.unpad(cipher.decrypt( enc[16:] ))
+
+
+class udptun_server:
+    def __init__(self, cipher, server_ip, server_port, server_num):
+        self.cipher = cipher
+        self.server_ip = server_ip
+        self.server_port = server_port
+        self.server_num = server_num
+        self.tunfd = None
+        self.fds = []
+        self.jsondata = json.dumps({'num':snum,'status':'OK'})
+        self.cmd_sock = None
+        #current client info
+        self.client_ip = None
+        self.client_port = None
+        self.client_num = None
+
+    def tun_init(self):
+        self.tunfd = tun_setup(True)
+
+    def fd_init(self):
+        cmd_addr = (self.server_ip, self.server_port)
+        self.cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.cmd_sock.setblocking(0)
         try:
-            sock.bind((sip, port))
+            self.cmd_sock.bind(cmd_addr)
         except socket.error, msg:
-            print "Bind failed. Error: " + str(msg[0]) + " " + msg[1]
-            sys.exit(1)
-        fds.append(sock)
-    tunfd = tun_setup()
-    fds.append(tunfd)
+            print "Socket Error: " + str(msg[0]) + " " + msg[1]
+            return False
+        for port in range(self.server_port+1, self.server_port+1+self.server_num):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setblocking(0)
+            try:
+                sock.bind((self.server_ip, port))
+            except socket.error, msg:
+                print "Socket Error: " + str(msg[0]) + " " + msg[1]
+                return False
+            self.fds.append(sock)
+        self.fds.append(self.cmd_sock)
+        self.fds.append(self.tunfd)
+        print "Command port [" + str(sport) + "]"
+        print "Data ports [" + str(sport+1) + "-" + str(sport+1+snum) + "]"
 
-    print "Command port [" + str(sport) + "]"
-    print "Data ports [" + str(sport+1) + "-" + str(sport+1+snum) + "]"
-    print "Server running..."
-    client_ip = None
-    client_port = None
-    client_num = None
-    while True:
-        readble,_,_ = select.select(fds,[],[])
-        for fd in readble:
-            if fd == cmd_sock:
-                data, addr = fd.recvfrom(2048)
-                jsondata = {'num':snum,'status':'OK'}
-                datastr = json.dumps(jsondata)
-                # verify
-                try:
+    def serve(self):
+        print "Server running..."
+        while True:
+            readable,_,_ = select.select(self.fds,[],[],30)
+            if len(readable) == 0:
+                #connect test
+                print "No data for 30s"
+            for fd in readable:
+                if fd == self.cmd_sock:
+                    data, addr = fd.recvfrom(2048)
+                    data = self.cipher.decrypt(data)
+                    # verify
+                    try:
+                        decoded = json.loads(data)
+                    except:
+                        print "Command error."
+                        continue
+                    self.client_num = int(decoded['num'])
+                    self.client_port = addr[1]
+                    if (self.client_num + self.client_port > 65535):
+                        print "Port num error: " + self.client_num
+                        continue
+                    self.client_ip = addr[0]
+                    # send back num
+                    fd.sendto(self.cipher.encrypt(self.jsondata),addr)
+                    print "Client connected: " + addr[0]
+                elif fd == self.tunfd: # from tun
+                    buf = self.tunfd.read(2048)
+                    buf = self.cipher.decrypt(buf)
+                    rnd = random.randint(1,snum)
+                    to_port = random.randint(self.client_port+1, self.client_port+self.client_num)
+                    to_sock = self.fds[rnd]
+                    to_sock.sendto(self.cipher.encrypt(buf), (self.client_ip, to_port))
+                    print "tun -> sock(" + str(self.client_ip) + " : " + str(self.client_port)
+                else: # from sock
+                    if self.client_ip != None:
+                        # connected
+                        data, addr = self.fd.recvfrom(2048)
+                        data = self.cipher.decrypt(data)
+                        self.tunfd.write(self.cipher.encrypt(data))
+                        print "sock(" + str(addr[0]) + " : " + str(addr[1]) + ") --> tun"
+                    else:
+                        data, addr = self.fd.recvfrom(2048)
+                        data = self.cipher.decrypt(data)
+                        print 'packet dropped: ' + addr[0] + ':' + str(addr[1])
+
+    def run(self):
+        self.tun_init();
+        if self.fd_init() == False:
+            return
+        self.serve()
+
+
+
+class udptun_client:
+    def __init__(self, cipher, local_ip, local_port, local_num, server_ip, server_port):
+        self.cipher = cipher
+        self.local_ip = local_ip
+        self.local_port = local_port
+        self.local_num = local_num
+        self.server_ip = server_ip
+        self.server_port = server_port
+        self.server_num = None
+        self.fds = []
+        self.jsondata = json.dumps({'num':local_num})
+        self.cmd_sock = None
+        self.tunfd = None
+
+    def tun_init(self):
+        self.tunfd = tun_setup(False)
+
+    def fd_init(self):
+        cmd_addr = (self.local_ip, self.local_port)
+        self.cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.cmd_sock.setblocking(0)
+        try:
+            self.cmd_sock.bind(cmd_addr)
+        except socket.error, msg:
+            print "Socket Error: " + str(msg[0]) + " " + msg[1]
+            return False
+        for port in range(self.local_port + 1, self.local_port + 1 + self.local_num):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setblocking(0)
+            try:
+                sock.bind((self.local_ip, port))
+            except socket.error, msg:
+                print "Socket Error: " + str(msg[0]) + " " + msg[1]
+                return False
+            self.fds.append(sock)
+        self.fds.append(self.cmd_sock)
+        self.fds.append(self.tunfd)
+        print "Command port [" + str(self.local_port) + "]"
+        print "Data ports [" + str(self.local_port+1) + "-" + str(self.local_port+1+self.local_num) + "]"
+
+    def connect(self):
+        while True:
+            print 'Connecting to: ' + self.server_ip + ':' + str(self.server_port)
+            try:
+                self.cmd_sock.sendto(self.cipher.encrypt(self.jsondata), (self.server_ip, self.server_port))
+                readable,_,_ = select.select([self.cmd_sock],[],[],5)
+                if len(readable) != 0:
+                    data, addr = self.cmd_sock.recvfrom(2048)
+                    data = self.cipher.decrypt(data)
                     decoded = json.loads(data)
-                except:
-                    print "Command error."
-                    continue
-                client_num = int(decoded['num'])
-                client_port = addr[1]
-                if (client_num + client_port > 65535):
-                    print "Port num error: " + client_num
-                    continue
-                client_ip = addr[0]
-                # send back num
-                fd.sendto(datastr,addr)
-                print "Client connected: " + addr[0]
-            elif fd == tunfd:
-                # from tun
-                #buf = tunfd.read(tunfd.mtu)
-                buf = tunfd.read(2048)
-                srnd = random.randint(1,snum)
-                to_port = random.randint(client_port+1, client_port+client_num)
-                to_sock = fds[srnd]
-                to_sock.sendto(buf, (client_ip, to_port))
-              	print "tun -> sock(" + str(client_ip) + " : " + str(client_port)
-		print_hex(buf) 
-            elif client_ip != None:
-                data, addr = fd.recvfrom(2048)
-                tunfd.write(data)
-                print "sock(" + str(addr[0]) + " : " + str(addr[1]) + ") --> tun"
-		print_hex(data) 
-            else:
-                data, addr = fd.recvfrom(2048)
-                print 'packet dropped: ' + addr[0] + ':' + str(addr[1])
+                    self.server_num = int(decoded['num'])
+                    if decoded['status'] == 'OK':
+                        print 'Connected, server port num: ' + str(self.server_num)
+                        break
+            except socket.error, msg:
+                print "Socket Error: " + str(msg[0]) + " " + msg[1]
+                print "Sleep and retry"
+                time.sleep(5)
 
-
-def do_client():
-    cmd_addr = (lip, lport)
-    cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    cmd_sock.setblocking(0)
-    try:
-        cmd_sock.bind(cmd_addr)
-    except socket.error, msg:
-        print "Bind failed. Error: " + str(msg[0]) + " " + msg[1]
-        sys.exit(1)
-
-    fds = [cmd_sock]
-    for port in range(lport+1,lport+1+lnum):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setblocking(0)
+    def transfer(self):
         try:
-            sock.bind((lip, port))
+            while True:
+                readable,_,_ = select.select(self.fds,[],[],30)
+                if len(readable) == 0:
+                    #no data, test connection
+                    print "Hello?"
+                    hello = "Hello?"
+                    self.cmd_sock.sendto(self.cipher.encrypt(hello), (self.server_ip, self.server_port))
+                    continue
+                for fd in readable:
+                    if fd == self.cmd_sock:
+                        data, addr = fd.recvfrom(2048)
+                        data = self.cipher.decrypt(data)
+                        continue
+                    elif fd == self.tunfd:
+                        #from tun
+                        buf = self.tunfd.read(2048)
+                        buf = self.cipher.decrypt(buf)
+                        rnd = random.randint(1, self.local_num)
+                        to_port = random.randint(self.server_port, self.server_port+self.server_num)
+                        to_sock = self.fds[rnd]
+                        to_sock.sendto(self.cipher.encrypt(buf), (self.server_ip, self.to_port))
+                        print "tun -> sock(" + str(self.server_ip) + " : " + str(to_port)
+                    else:
+                        # from data socks
+                        data, addr = fd.recvfrom(2048)
+                        data = self.cipher.decrypt(data)
+                        self.tunfd.write(self.cipher.encrypt(data))
+                        print "sock(" + str(addr[0]) + " : " + str(addr[1]) + ") --> tun"
         except socket.error, msg:
-            print "Bind failed. Error: " + str(msg[0]) + " " + msg[1]
-            sys.exit(1)
-        fds.append(sock)
-    tunfd = tun_setup()
-    fds.append(tunfd)
+            print "Socket Error: " + str(msg[0]) + " " + msg[1]
+            return
 
-    print "Command port [" + str(lport) + "]"
-    print "Data ports [" + str(lport+1) + "-" + str(lport+1+lnum) + "]"
-    server_ip = sip
-    server_port = sport
-    server_num = None
-    server_addr = (sip, sport)
+    def run(self):
+        self.tun_init()
+        if self.fd_init() == False:
+            return
+        while True:
+            self.connect()
+            self.transfer()
 
-    jsondata = {'num':lnum}
-    datastr = json.dumps(jsondata)
-    while True:
-        print 'Connecting to: ' + server_ip + ':' + str(server_port)
-        cmd_sock.sendto(datastr, server_addr)
-        readble,_,_ = select.select([cmd_sock],[],[],5)
-        if len(readble) != 0:
-            data, addr = cmd_sock.recvfrom(2048)
-            decoded = json.loads(data)
-            server_num = int(decoded['num'])
-            if decoded['status'] == 'OK':
-                print 'Connected, server port num: ' + str(server_num)
-                break
 
-    while True:
-        readble,_,_ = select.select(fds,[],[])
-        for fd in readble:
-            if fd == cmd_sock:
-                data, addr = fd.recvfrom(2048)
-                #heartbeat
-                continue
-            elif fd == tunfd:
-                #from tun
-                #buf = tunfd.read(tunfd.mtu)
-                buf = tunfd.read(2048)
-                lrnd = random.randint(1,lnum)
-                to_port = random.randint(server_port+1, server_port+server_num)
-                to_sock = fds[lrnd]
-                to_sock.sendto(buf, (server_ip, to_port))
-              	print "tun -> sock(" + str(server_ip) + " : " + str(to_port)
-		print_hex(buf) 
-            else:
-                # from data socks
-                data, addr = fd.recvfrom(2048)
-                tunfd.write(data)
-                print "sock(" + str(addr[0]) + " : " + str(addr[1]) + ") --> tun"
-		print_hex(data) 
-
+cipher = AESCipher(passwd)
 if mode == 'server':
-    do_server()
+    runner = udptun_server(cipher, sip, sport, snum)
+    runner.run()
 else:
-    do_client()
+    runner = udptun_client(cipher, lip, lport, lnum, sip, sport)
+    runner.run()
 
