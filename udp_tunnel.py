@@ -3,6 +3,7 @@
 from Crypto import Random
 from Crypto.Cipher import AES
 import argparse
+import hashlib
 import json
 import pytun
 import random
@@ -28,6 +29,7 @@ parser.add_argument('--passwd', help = 'Password, length must be multiple of 16'
 parser.add_argument('--lip', help = 'Bind local ip address')
 parser.add_argument('--lport', type = int, help = 'Server port')
 parser.add_argument('--lnum', type = int, help = 'Number of listen ports, starting from port+1')
+parser.add_argument('--set-gw', help = 'Set default gateway to the tun dev')
 args = parser.parse_args()
 
 mode = args.mode
@@ -54,14 +56,14 @@ if mode == "client" and lip == None:
 if sport == None:
     sport = 10000;
 if snum == None:
-    snum = 10
+    snum = 1000 # has to modify limits.conf to allow more ports
 if snum < 1:
     print "num should >= 1"
     exit(-1)
 if lport == None:
     lport = 20000;
 if lnum == None:
-    lnum = 10
+    lnum = 100
 if lnum < 1:
     print "lnum should >= 1"
     exit(-1)
@@ -71,6 +73,11 @@ if passwd == None:
 if len(passwd) < 16 or len(passwd)%16 != 0:
     print "Password length must be multiple of 16"
     exit(-1)
+
+# setup route
+#root@mbspi:/home/pi/udp_tunnel# route add -net 0.0.0.0 netmask 128.0.0.0 dev ctun
+#root@mbspi:/home/pi/udp_tunnel# route add -net 128.0.0.0 netmask 128.0.0.0 dev ctun
+#root@mbspi:/home/pi/udp_tunnel# route add -net 104.224.175.54 netmask 255.255.255.255 dev ppp0
 
 def tun_setup(is_server):
     tun = None
@@ -91,7 +98,9 @@ def tun_setup(is_server):
 class AESCipher:
     def __init__( self, key ):
         self.BS = 16
-        self.key = key
+        sha1obj = hashlib.sha1()
+        sha1obj.update(key)
+        self.key = sha1obj.hexdigest()[:16]
 
     def pad(self, raw):
         #two bytes length,+padded data
@@ -103,13 +112,13 @@ class AESCipher:
         datalen = struct.unpack('<H', data[:2])[0]
         return data[2:2+datalen]
 
-    def encrypt( self, raw ):
+    def encrypt(self, raw):
         raw = self.pad(raw)
         iv = Random.new().read( AES.block_size )
         cipher = AES.new( self.key, AES.MODE_CBC, iv )
         return iv+cipher.encrypt(raw)
 
-    def decrypt( self, enc ):
+    def decrypt(self, enc):
         iv = enc[:16]
         cipher = AES.new(self.key, AES.MODE_CBC, iv )
         return self.unpad(cipher.decrypt( enc[16:] ))
@@ -123,7 +132,7 @@ class udptun_server:
         self.server_num = server_num
         self.tunfd = None
         self.fds = []
-        self.jsondata = json.dumps({'num':snum,'status':'OK'})
+        self.jsondata = json.dumps({'num':server_num,'status':'OK'})
         self.cmd_sock = None
         #current client info
         self.client_ip = None
@@ -153,8 +162,8 @@ class udptun_server:
             self.fds.append(sock)
         self.fds.append(self.cmd_sock)
         self.fds.append(self.tunfd)
-        print "Command port [" + str(sport) + "]"
-        print "Data ports [" + str(sport+1) + "-" + str(sport+1+snum) + "]"
+        print "Command port [" + str(self.server_port) + "]"
+        print "Data ports [" + str(self.server_port+1) + "-" + str(self.server_port+self.server_num) + "]"
 
     def serve(self):
         print "Server running..."
@@ -184,19 +193,19 @@ class udptun_server:
                     print "Client connected: " + addr[0]
                 elif fd == self.tunfd: # from tun
                     buf = self.tunfd.read(2048)
-                    buf = self.cipher.decrypt(buf)
-                    rnd = random.randint(1,snum)
+                    buf = self.cipher.encrypt(buf)
+                    rnd = random.randint(0, self.server_num-1)
                     to_port = random.randint(self.client_port+1, self.client_port+self.client_num)
                     to_sock = self.fds[rnd]
-                    to_sock.sendto(self.cipher.encrypt(buf), (self.client_ip, to_port))
-                    print "tun -> sock(" + str(self.client_ip) + " : " + str(self.client_port)
+                    to_sock.sendto(buf, (self.client_ip, to_port))
+                    #print "tun -> sock(" + str(self.client_ip) + ":" + str(to_port) + ")"
                 else: # from sock
                     if self.client_ip != None:
                         # connected
-                        data, addr = self.fd.recvfrom(2048)
+                        data, addr = fd.recvfrom(2048)
                         data = self.cipher.decrypt(data)
-                        self.tunfd.write(self.cipher.encrypt(data))
-                        print "sock(" + str(addr[0]) + " : " + str(addr[1]) + ") --> tun"
+                        self.tunfd.write(data)
+                        #print "sock(" + str(addr[0]) + ":" + str(addr[1]) + ") --> tun"
                     else:
                         data, addr = self.fd.recvfrom(2048)
                         data = self.cipher.decrypt(data)
@@ -236,7 +245,7 @@ class udptun_client:
         except socket.error, msg:
             print "Socket Error: " + str(msg[0]) + " " + msg[1]
             return False
-        for port in range(self.local_port + 1, self.local_port + 1 + self.local_num):
+        for port in range(self.local_port+1, self.local_port+1+self.local_num):
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setblocking(0)
             try:
@@ -248,7 +257,7 @@ class udptun_client:
         self.fds.append(self.cmd_sock)
         self.fds.append(self.tunfd)
         print "Command port [" + str(self.local_port) + "]"
-        print "Data ports [" + str(self.local_port+1) + "-" + str(self.local_port+1+self.local_num) + "]"
+        print "Data ports [" + str(self.local_port+1) + "-" + str(self.local_port+self.local_num) + "]"
 
     def connect(self):
         while True:
@@ -275,9 +284,9 @@ class udptun_client:
                 readable,_,_ = select.select(self.fds,[],[],30)
                 if len(readable) == 0:
                     #no data, test connection
-                    print "Hello?"
-                    hello = "Hello?"
-                    self.cmd_sock.sendto(self.cipher.encrypt(hello), (self.server_ip, self.server_port))
+                    #print "Hello?"
+                    #hello = "Hello?"
+                    #self.cmd_sock.sendto(self.cipher.encrypt(hello), (self.server_ip, self.server_port))
                     continue
                 for fd in readable:
                     if fd == self.cmd_sock:
@@ -287,18 +296,18 @@ class udptun_client:
                     elif fd == self.tunfd:
                         #from tun
                         buf = self.tunfd.read(2048)
-                        buf = self.cipher.decrypt(buf)
-                        rnd = random.randint(1, self.local_num)
-                        to_port = random.randint(self.server_port, self.server_port+self.server_num)
+                        buf = self.cipher.encrypt(buf)
+                        rnd = random.randint(0, self.local_num-1)
+                        to_port = random.randint(self.server_port+1, self.server_port+self.server_num)
                         to_sock = self.fds[rnd]
-                        to_sock.sendto(self.cipher.encrypt(buf), (self.server_ip, self.to_port))
-                        print "tun -> sock(" + str(self.server_ip) + " : " + str(to_port)
+                        to_sock.sendto(buf, (self.server_ip, to_port))
+                        #print "tun -> sock(" + str(self.server_ip) + ":" + str(to_port) + ")"
                     else:
                         # from data socks
                         data, addr = fd.recvfrom(2048)
                         data = self.cipher.decrypt(data)
-                        self.tunfd.write(self.cipher.encrypt(data))
-                        print "sock(" + str(addr[0]) + " : " + str(addr[1]) + ") --> tun"
+                        self.tunfd.write(data)
+                        #print "sock(" + str(addr[0]) + ":" + str(addr[1]) + ") --> tun"
         except socket.error, msg:
             print "Socket Error: " + str(msg[0]) + " " + msg[1]
             return
@@ -320,3 +329,5 @@ else:
     runner = udptun_client(cipher, lip, lport, lnum, sip, sport)
     runner.run()
 
+
+# vim: ts=4:sw=4:si:et 
