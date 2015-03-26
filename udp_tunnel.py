@@ -68,6 +68,11 @@ def encode(data):
         b[i] ^= 1
     return str(b)
 
+def print_hex(data):
+    print "Data: " + str(len(data)) + " bytes"
+    #print "Data: " + str(data)
+    #print ':'.join(x.encode('hex') for x in data)
+
 def tun_setup():
     tun = None
     if mode == "server":
@@ -135,17 +140,21 @@ def do_server():
                 # send back num
                 fd.sendto(datastr,addr)
                 print "Client connected: " + addr[0]
-            elif sock == tunfd:
+            elif fd == tunfd:
                 # from tun
-                buf = tunfd.read(tunfd.mtu)
+                #buf = tunfd.read(tunfd.mtu)
+                buf = tunfd.read(2048)
                 srnd = random.randint(1,snum)
                 to_port = random.randint(client_port+1, client_port+client_num)
                 to_sock = fds[srnd]
-                to_sock.sendto(buf, (server_ip, to_port))
+                to_sock.sendto(buf, (client_ip, to_port))
+              	print "tun -> sock(" + str(client_ip) + " : " + str(client_port)
+		print_hex(buf) 
             elif client_ip != None:
                 data, addr = fd.recvfrom(2048)
                 tunfd.write(data)
-                continue
+                print "sock(" + str(addr[0]) + " : " + str(addr[1]) + ") --> tun"
+		print_hex(data) 
             else:
                 data, addr = fd.recvfrom(2048)
                 print 'packet dropped: ' + addr[0] + ':' + str(addr[1])
@@ -198,23 +207,26 @@ def do_client():
     while True:
         readble,_,_ = select.select(fds,[],[])
         for fd in readble:
-            if sock == cmd_sock:
+            if fd == cmd_sock:
                 data, addr = fd.recvfrom(2048)
                 #heartbeat
                 continue
-            elif sock == tunfd:
+            elif fd == tunfd:
                 #from tun
-                buf = tunfd.read(tunfd.mtu)
+                #buf = tunfd.read(tunfd.mtu)
+                buf = tunfd.read(2048)
                 lrnd = random.randint(1,lnum)
                 to_port = random.randint(server_port+1, server_port+server_num)
                 to_sock = fds[lrnd]
                 to_sock.sendto(buf, (server_ip, to_port))
-                print "tun --> sock"
+              	print "tun -> sock(" + str(server_ip) + " : " + str(to_port)
+		print_hex(buf) 
             else:
                 # from data socks
                 data, addr = fd.recvfrom(2048)
                 tunfd.write(data)
-                print "sock --> tun"
+                print "sock(" + str(addr[0]) + " : " + str(addr[1]) + ") --> tun"
+		print_hex(data) 
 
 if mode == 'server':
     do_server()
