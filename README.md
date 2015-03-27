@@ -1,5 +1,5 @@
 # udp_tunnel
-- It's used to fsck the GFW.
+- It's used to fuck the GFW.
 - Features:
  - Port number randomization. Heavy load on a single port would normally trigger the GFW very soon, so let's open 1000 ports instead.
  - AES encription.
