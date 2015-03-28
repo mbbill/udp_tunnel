@@ -51,8 +51,7 @@ except socket.error:
     exit(-1)
 
 if mode == "client" and lip == None:
-    print "--lip <address>"
-    exit(-1)
+    lip = ""
 if sport == None:
     sport = 10000;
 if snum == None:
