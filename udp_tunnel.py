@@ -174,11 +174,10 @@ class udptun_server:
     def serve(self):
         print "Server running..."
         while True:
-            #readable,_,_ = select.select(self.fds,[],[],30)
             events = self.epoll.poll(30)
-            #if len(readable) == 0:
-            #    #connect test
-            #    print "No data for 30s"
+            if len(events) == 0:
+                #connect test
+                print "No data for 30s"
             for fileno, event in events:
                 if fileno == self.cmd_sock.fileno():
                     data, addr = self.cmd_sock.recvfrom(2048)
@@ -235,10 +234,12 @@ class udptun_client:
         self.server_ip = server_ip
         self.server_port = server_port
         self.server_num = None
-        self.fds = []
-        self.jsondata = json.dumps({'num':local_num})
-        self.cmd_sock = None
         self.tunfd = None
+        self.epoll = select.epoll()
+        self.fno_to_fd = {}
+        self.data_socks = []
+        self.cmd_sock = None
+        self.jsondata = json.dumps({'num':local_num})
 
     def tun_init(self):
         self.tunfd = tun_setup(False)
@@ -260,9 +261,13 @@ class udptun_client:
             except socket.error, msg:
                 print "Socket Error: " + str(msg[0]) + " " + msg[1]
                 return False
-            self.fds.append(sock)
-        self.fds.append(self.cmd_sock)
-        self.fds.append(self.tunfd)
+            self.data_socks.append(sock)
+            self.epoll.register(sock.fileno(), select.EPOLLIN)
+            self.fno_to_fd[sock.fileno()] = sock
+        self.epoll.register(self.cmd_sock.fileno(), select.EPOLLIN)
+        self.fno_to_fd[self.cmd_sock.fileno()] = self.cmd_sock
+        self.epoll.register(self.tunfd.fileno(), select.EPOLLIN)
+        self.fno_to_fd[self.tunfd.fileno()] = self.tunfd
         print "Command port [" + str(self.local_port) + "]"
         print "Data ports [" + str(self.local_port+1) + "-" + str(self.local_port+self.local_num) + "]"
 
@@ -288,30 +293,30 @@ class udptun_client:
     def transfer(self):
         try:
             while True:
-                readable,_,_ = select.select(self.fds,[],[],30)
-                if len(readable) == 0:
+                events = self.epoll.poll(30)
+                if len(events) == 0:
                     #no data, test connection
                     #print "Hello?"
                     #hello = "Hello?"
                     #self.cmd_sock.sendto(self.cipher.encrypt(hello), (self.server_ip, self.server_port))
                     continue
-                for fd in readable:
-                    if fd == self.cmd_sock:
-                        data, addr = fd.recvfrom(2048)
+                for fileno, event in events:
+                    if fileno == self.cmd_sock:
+                        data, addr = self.cmd_sock.recvfrom(2048)
                         data = self.cipher.decrypt(data)
                         continue
-                    elif fd == self.tunfd:
+                    elif fileno == self.tunfd.fileno():
                         #from tun
                         buf = self.tunfd.read(2048)
                         buf = self.cipher.encrypt(buf)
                         rnd = random.randint(0, self.local_num-1)
                         to_port = random.randint(self.server_port+1, self.server_port+self.server_num)
-                        to_sock = self.fds[rnd]
+                        to_sock = self.data_socks[rnd]
                         to_sock.sendto(buf, (self.server_ip, to_port))
                         #print "tun -> sock(" + str(self.server_ip) + ":" + str(to_port) + ")"
                     else:
                         # from data socks
-                        data, addr = fd.recvfrom(2048)
+                        data, addr = self.fno_to_fd[fileno].recvfrom(2048)
                         data = self.cipher.decrypt(data)
                         self.tunfd.write(data)
                         #print "sock(" + str(addr[0]) + ":" + str(addr[1]) + ") --> tun"
@@ -334,8 +339,9 @@ if mode == 'server':
 else:
     runner = udptun_client(cipher, lip, lport, lnum, sip, sport)
 
-import cProfile
-cProfile.run('runner.run()')
+runner.run()
+#import cProfile
+#cProfile.run('runner.run()')
 
 
 # vim: ts=4:sw=4:si:et 
