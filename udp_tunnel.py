@@ -207,7 +207,7 @@ class udptun_server:
                         self.tunfd.write(data)
                         #print "sock(" + str(addr[0]) + ":" + str(addr[1]) + ") --> tun"
                     else:
-                        data, addr = self.fd.recvfrom(2048)
+                        data, addr = fd.recvfrom(2048)
                         data = self.cipher.decrypt(data)
                         print 'packet dropped: ' + addr[0] + ':' + str(addr[1])
 
