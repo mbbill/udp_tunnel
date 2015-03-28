@@ -69,8 +69,8 @@ if lnum < 1:
 if passwd == None:
     print "No password?"
     exit(-1)
-if len(passwd) < 16 or len(passwd)%16 != 0:
-    print "Password length must be multiple of 16"
+if len(passwd) < 6:
+    print "You should use a longer password."
     exit(-1)
 
 # setup route
@@ -98,7 +98,10 @@ class AESCipher:
     def __init__( self, key ):
         self.BS = 16
         sha1obj = hashlib.sha1()
-        sha1obj.update(key)
+        sha1obj.update(self.pad(key))
+        sha1obj.update(sha1obj.hexdigest())
+        sha1obj.update(sha1obj.hexdigest())
+        sha1obj.update(sha1obj.hexdigest())
         self.key = sha1obj.hexdigest()[:16]
 
     def pad(self, raw):
@@ -119,7 +122,7 @@ class AESCipher:
             cipher = AES.new( self.key, AES.MODE_CBC, iv )
             ret = iv+cipher.encrypt(raw)
         except:
-            print "encrypt error %s" % sys.exc_info()[0]
+            print "Encrypt error %s" % sys.exc_info()[0]
             ret = None
         return ret
 
@@ -130,7 +133,7 @@ class AESCipher:
             cipher = AES.new(self.key, AES.MODE_CBC, iv )
             ret = self.unpad(cipher.decrypt( enc[16:] ))
         except:
-            print "decrypt error %s" % sys.exc_info()[0]
+            print "Decrypt error %s" % sys.exc_info()[0]
             ret = None
         return ret
 
@@ -197,7 +200,7 @@ class udptun_server:
                     try:
                         decoded = json.loads(data)
                     except:
-                        print "Command error."
+                        print "Command error, wrong password?"
                         continue
                     self.client_num = int(decoded['num'])
                     self.client_port = addr[1]
