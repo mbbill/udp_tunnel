@@ -113,15 +113,27 @@ class AESCipher:
         return data[2:2+datalen]
 
     def encrypt(self, raw):
-        raw = self.pad(raw)
-        iv = Random.new().read( AES.block_size )
-        cipher = AES.new( self.key, AES.MODE_CBC, iv )
-        return iv+cipher.encrypt(raw)
+        ret = None
+        try:
+            raw = self.pad(raw)
+            iv = Random.new().read( AES.block_size )
+            cipher = AES.new( self.key, AES.MODE_CBC, iv )
+            ret = iv+cipher.encrypt(raw)
+        except:
+            print "encrypt error %s" % sys.exc_info()[0]
+            ret = None
+        return ret
 
     def decrypt(self, enc):
-        iv = enc[:16]
-        cipher = AES.new(self.key, AES.MODE_CBC, iv )
-        return self.unpad(cipher.decrypt( enc[16:] ))
+        ret = None
+        try:
+            iv = enc[:16]
+            cipher = AES.new(self.key, AES.MODE_CBC, iv )
+            ret = self.unpad(cipher.decrypt( enc[16:] ))
+        except:
+            print "decrypt error %s" % sys.exc_info()[0]
+            ret = None
+        return ret
 
 
 class udptun_server:
@@ -195,27 +207,31 @@ class udptun_server:
                         continue
                     self.client_ip = addr[0]
                     # send back num
-                    self.cmd_sock.sendto(self.cipher.encrypt(self.jsondata),addr)
+                    enc = self.cipher.encrypt(self.jsondata)
+                    if enc != None:
+                        self.cmd_sock.sendto(enc, addr)
                     print "Client connected: " + addr[0]
                 elif fileno == self.tunfd.fileno(): # from tun
                     buf = self.tunfd.read(2048)
-                    buf = self.cipher.encrypt(buf)
+                    enc = self.cipher.encrypt(buf)
+                    if enc == None:
+                        continue
                     rnd = random.randint(0, self.server_num-1)
                     to_port = random.randint(self.client_port+1, self.client_port+self.client_num)
                     to_sock = self.data_socks[rnd]
-                    to_sock.sendto(buf, (self.client_ip, to_port))
+                    to_sock.sendto(enc, (self.client_ip, to_port))
                     #print "tun -> sock(" + str(self.client_ip) + ":" + str(to_port) + ")"
                 else: # from sock
-                    if self.client_ip != None:
-                        # connected
-                        data, addr = self.fno_to_fd[fileno].recvfrom(2048)
-                        data = self.cipher.decrypt(data)
-                        self.tunfd.write(data)
+                    data, addr = self.fno_to_fd[fileno].recvfrom(2048)
+                    if addr[0] == self.client_ip and addr[1] >= self.client_port+1 and \
+                            addr[1] <= self.client_port+self.client_num:
+                        dec = self.cipher.decrypt(data)
+                        if dec != None:
+                            self.tunfd.write(dec)
+                        continue
                         #print "sock(" + str(addr[0]) + ":" + str(addr[1]) + ") --> tun"
-                    else:
-                        data, addr = self.fno_to_fd[fileno].recvfrom(2048)
-                        data = self.cipher.decrypt(data)
-                        print 'packet dropped: ' + addr[0] + ':' + str(addr[1])
+                    # no connection, or invalid packet
+                    print 'packet dropped: ' + addr[0] + ':' + str(addr[1])
 
     def run(self):
         self.tun_init();
@@ -275,16 +291,21 @@ class udptun_client:
         while True:
             print 'Connecting to: ' + self.server_ip + ':' + str(self.server_port)
             try:
-                self.cmd_sock.sendto(self.cipher.encrypt(self.jsondata), (self.server_ip, self.server_port))
+                enc = self.cipher.encrypt(self.jsondata)
+                if enc == None:
+                    return False
+                self.cmd_sock.sendto(enc, (self.server_ip, self.server_port))
                 readable,_,_ = select.select([self.cmd_sock],[],[],5)
                 if len(readable) != 0:
                     data, addr = self.cmd_sock.recvfrom(2048)
-                    data = self.cipher.decrypt(data)
-                    decoded = json.loads(data)
+                    dec = self.cipher.decrypt(data)
+                    if dec == None:
+                        return False
+                    decoded = json.loads(dec)
                     self.server_num = int(decoded['num'])
                     if decoded['status'] == 'OK':
                         print 'Connected, server port num: ' + str(self.server_num)
-                        break
+                        return True
             except socket.error, msg:
                 print "Socket Error: " + str(msg[0]) + " " + msg[1]
                 print "Sleep and retry"
@@ -303,23 +324,33 @@ class udptun_client:
                 for fileno, event in events:
                     if fileno == self.cmd_sock:
                         data, addr = self.cmd_sock.recvfrom(2048)
-                        data = self.cipher.decrypt(data)
+                        dec = self.cipher.decrypt(data)
+                        if dec == None:
+                            print "Command data error!"
+                            return
                         continue
                     elif fileno == self.tunfd.fileno():
                         #from tun
                         buf = self.tunfd.read(2048)
-                        buf = self.cipher.encrypt(buf)
+                        enc = self.cipher.encrypt(buf)
+                        if enc == None:
+                            continue
                         rnd = random.randint(0, self.local_num-1)
                         to_port = random.randint(self.server_port+1, self.server_port+self.server_num)
                         to_sock = self.data_socks[rnd]
-                        to_sock.sendto(buf, (self.server_ip, to_port))
+                        to_sock.sendto(enc, (self.server_ip, to_port))
                         #print "tun -> sock(" + str(self.server_ip) + ":" + str(to_port) + ")"
                     else:
                         # from data socks
                         data, addr = self.fno_to_fd[fileno].recvfrom(2048)
-                        data = self.cipher.decrypt(data)
-                        self.tunfd.write(data)
-                        #print "sock(" + str(addr[0]) + ":" + str(addr[1]) + ") --> tun"
+                        if addr[0] == self.server_ip and addr[1] >= self.server_port+1 and \
+                                addr[1] <= self.server_port+self.server_num:
+                            dec = self.cipher.decrypt(data)
+                            if dec != None:
+                                self.tunfd.write(dec)
+                                #print "sock(" + str(addr[0]) + ":" + str(addr[1]) + ") --> tun"
+                            continue
+                        print 'packet dropped: ' + addr[0] + ':' + str(addr[1])
         except socket.error, msg:
             print "Socket Error: " + str(msg[0]) + " " + msg[1]
             return
@@ -329,8 +360,10 @@ class udptun_client:
         if self.fd_init() == False:
             return
         while True:
-            self.connect()
-            self.transfer()
+            if self.connect() == True:
+                self.transfer()
+            else:
+                return
 
 cipher = AESCipher(passwd)
 runner = None
