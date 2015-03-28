@@ -131,9 +131,11 @@ class udptun_server:
         self.server_port = server_port
         self.server_num = server_num
         self.tunfd = None
-        self.fds = []
-        self.jsondata = json.dumps({'num':server_num,'status':'OK'})
+        self.epoll = select.epoll()
+        self.fno_to_fd = {}
+        self.data_socks = []
         self.cmd_sock = None
+        self.jsondata = json.dumps({'num':server_num,'status':'OK'})
         #current client info
         self.client_ip = None
         self.client_port = None
@@ -159,22 +161,27 @@ class udptun_server:
             except socket.error, msg:
                 print "Socket Error: " + str(msg[0]) + " " + msg[1]
                 return False
-            self.fds.append(sock)
-        self.fds.append(self.cmd_sock)
-        self.fds.append(self.tunfd)
+            self.data_socks.append(sock)
+            self.epoll.register(sock.fileno(), select.EPOLLIN)
+            self.fno_to_fd[sock.fileno()] = sock
+        self.epoll.register(self.cmd_sock.fileno(), select.EPOLLIN)
+        self.fno_to_fd[self.cmd_sock.fileno()] = self.cmd_sock
+        self.epoll.register(self.tunfd.fileno(), select.EPOLLIN)
+        self.fno_to_fd[self.tunfd.fileno()] = self.tunfd
         print "Command port [" + str(self.server_port) + "]"
         print "Data ports [" + str(self.server_port+1) + "-" + str(self.server_port+self.server_num) + "]"
 
     def serve(self):
         print "Server running..."
         while True:
-            readable,_,_ = select.select(self.fds,[],[],30)
-            if len(readable) == 0:
-                #connect test
-                print "No data for 30s"
-            for fd in readable:
-                if fd == self.cmd_sock:
-                    data, addr = fd.recvfrom(2048)
+            #readable,_,_ = select.select(self.fds,[],[],30)
+            events = self.epoll.poll(30)
+            #if len(readable) == 0:
+            #    #connect test
+            #    print "No data for 30s"
+            for fileno, event in events:
+                if fileno == self.cmd_sock.fileno():
+                    data, addr = self.cmd_sock.recvfrom(2048)
                     data = self.cipher.decrypt(data)
                     # verify
                     try:
@@ -189,25 +196,25 @@ class udptun_server:
                         continue
                     self.client_ip = addr[0]
                     # send back num
-                    fd.sendto(self.cipher.encrypt(self.jsondata),addr)
+                    self.cmd_sock.sendto(self.cipher.encrypt(self.jsondata),addr)
                     print "Client connected: " + addr[0]
-                elif fd == self.tunfd: # from tun
+                elif fileno == self.tunfd.fileno(): # from tun
                     buf = self.tunfd.read(2048)
                     buf = self.cipher.encrypt(buf)
                     rnd = random.randint(0, self.server_num-1)
                     to_port = random.randint(self.client_port+1, self.client_port+self.client_num)
-                    to_sock = self.fds[rnd]
+                    to_sock = self.data_socks[rnd]
                     to_sock.sendto(buf, (self.client_ip, to_port))
                     #print "tun -> sock(" + str(self.client_ip) + ":" + str(to_port) + ")"
                 else: # from sock
                     if self.client_ip != None:
                         # connected
-                        data, addr = fd.recvfrom(2048)
+                        data, addr = self.fno_to_fd[fileno].recvfrom(2048)
                         data = self.cipher.decrypt(data)
                         self.tunfd.write(data)
                         #print "sock(" + str(addr[0]) + ":" + str(addr[1]) + ") --> tun"
                     else:
-                        data, addr = fd.recvfrom(2048)
+                        data, addr = self.fno_to_fd[fileno].recvfrom(2048)
                         data = self.cipher.decrypt(data)
                         print 'packet dropped: ' + addr[0] + ':' + str(addr[1])
 
@@ -320,14 +327,15 @@ class udptun_client:
             self.connect()
             self.transfer()
 
-
 cipher = AESCipher(passwd)
+runner = None
 if mode == 'server':
     runner = udptun_server(cipher, sip, sport, snum)
-    runner.run()
 else:
     runner = udptun_client(cipher, lip, lport, lnum, sip, sport)
-    runner.run()
+
+import cProfile
+cProfile.run('runner.run()')
 
 
 # vim: ts=4:sw=4:si:et 
