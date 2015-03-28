@@ -2,13 +2,12 @@
 # Author Ming, Bai
 from Crypto import Random
 from Crypto.Cipher import AES
+from Crypto.Hash import SHA256
 import argparse
-import hashlib
 import json
 import pytun
 import random
 import select
-import sha
 import socket
 import struct
 import sys
@@ -97,12 +96,12 @@ def tun_setup(is_server):
 class AESCipher:
     def __init__( self, key ):
         self.BS = 16
-        sha1obj = hashlib.sha1()
-        sha1obj.update(self.pad(key))
-        sha1obj.update(sha1obj.hexdigest())
-        sha1obj.update(sha1obj.hexdigest())
-        sha1obj.update(sha1obj.hexdigest())
-        self.key = sha1obj.hexdigest()[:16]
+        h = SHA256.new()
+        h.update(self.pad(key))
+        h.update(h.hexdigest())
+        h.update(h.hexdigest())
+        h.update(h.hexdigest())
+        self.key = h.hexdigest()[:16]
 
     def pad(self, raw):
         #two bytes length,+padded data
@@ -118,8 +117,8 @@ class AESCipher:
         ret = None
         try:
             raw = self.pad(raw)
-            iv = Random.new().read( AES.block_size )
-            cipher = AES.new( self.key, AES.MODE_CBC, iv )
+            iv = Random.new().read(AES.block_size)
+            cipher = AES.new(self.key, AES.MODE_CBC, iv)
             ret = iv+cipher.encrypt(raw)
         except:
             print "Encrypt error %s" % sys.exc_info()[0]
@@ -129,9 +128,9 @@ class AESCipher:
     def decrypt(self, enc):
         ret = None
         try:
-            iv = enc[:16]
-            cipher = AES.new(self.key, AES.MODE_CBC, iv )
-            ret = self.unpad(cipher.decrypt( enc[16:] ))
+            iv = enc[:AES.block_size]
+            cipher = AES.new(self.key, AES.MODE_CBC, iv)
+            ret = self.unpad(cipher.decrypt(enc[AES.block_size:]))
         except:
             print "Decrypt error %s" % sys.exc_info()[0]
             ret = None
