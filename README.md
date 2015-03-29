@@ -8,7 +8,7 @@
  - Anti protocol detection, no plan text negotiation and every packet is encrypted.
 
 # Note
- - It cannot go cross NAT for the moment.
+ - It cannot go across NAT for the moment.
 
 # Usage
  - Server:
