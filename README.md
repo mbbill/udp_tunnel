@@ -12,14 +12,14 @@
 
 # Usage
  - Server:
-  - #./udp_tunnel --mode server --host <ip> --passwd <pass>
+  - #./udp_tunnel --mode server --host "ip" --passwd "pass"
   - Enable forwarding: #sysctl -w net.ipv4.ip_forward=1 (or modify the /etc/sysctl.conf)
-  - Enable MASQUERADE #iptables -t nat -A POSTROUTING -s 10.9.0.0/24 -o <output dev> -j MASQUERADE
+  - Enable MASQUERADE #iptables -t nat -A POSTROUTING -s 10.9.0.0/24 -o "output dev" -j MASQUERADE
 
  - Client:
-  - #./udp_tunnel --mode client --host <server hostname> --passwd <pass>
+  - #./udp_tunnel --mode client --host "server hostname" --passwd "pass"
   - Add route policies
-   - #route add -net <server ip>/32 dev xxx(your default dev)
+   - #route add -net "server ip"/32 dev xxx(your default dev)
    - #route add -net 128.0.0.0/1 dev ctun
    - #route add -net 0.0.0.0/1 dev ctun
 
