@@ -373,7 +373,15 @@ if mode == 'server':
 else:
     runner = udptun_client(cipher, lip, lport, lnum, sip, sport)
 
-runner.run()
+while True:
+    try:
+        runner.run()
+    except IOError as (errno, strerror):
+        print "I/O error({0}): {1}".format(errno, strerror)
+    except:
+        print "Unexpected error:", sys.exc_info()[0]
+        raise
+
 #import cProfile
 #cProfile.run('runner.run()')
 
