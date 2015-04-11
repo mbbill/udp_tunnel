@@ -26,7 +26,7 @@ parser.add_argument('--snum', type = int, help = 'Number of listen ports, starti
 parser.add_argument('--passwd', help = 'Password, length must be multiple of 16')
 # client mode
 parser.add_argument('--lip', help = 'Bind local ip address')
-parser.add_argument('--lport', type = int, help = 'Server port')
+parser.add_argument('--lport', type = int, help = 'Local port')
 parser.add_argument('--lnum', type = int, help = 'Number of listen ports, starting from port+1')
 parser.add_argument('--set-gw', help = 'Set default gateway to the tun dev')
 args = parser.parse_args()
@@ -61,7 +61,7 @@ if snum < 1:
 if lport == None:
     lport = 20000;
 if lnum == None:
-    lnum = 100
+    lnum = 1000
 if lnum < 1:
     print "lnum should >= 1"
     exit(-1)
@@ -218,7 +218,8 @@ class udptun_server:
                     if enc == None:
                         continue
                     rnd = random.randint(0, self.server_num-1)
-                    to_port = random.randint(self.client_port+1, self.client_port+self.client_num)
+                    #to_port = random.randint(self.client_port+1, self.client_port+self.client_num)
+                    to_port = self.client_port+1+rnd
                     to_sock = self.data_socks[rnd]
                     to_sock.sendto(enc, (self.client_ip, to_port))
                     #print "tun -> sock(" + str(self.client_ip) + ":" + str(to_port) + ")"
@@ -337,7 +338,8 @@ class udptun_client:
                         if enc == None:
                             continue
                         rnd = random.randint(0, self.local_num-1)
-                        to_port = random.randint(self.server_port+1, self.server_port+self.server_num)
+                        #to_port = random.randint(self.server_port+1, self.server_port+self.server_num)
+                        to_port = self.server_port+1+rnd
                         to_sock = self.data_socks[rnd]
                         to_sock.sendto(enc, (self.server_ip, to_port))
                         #print "tun -> sock(" + str(self.server_ip) + ":" + str(to_port) + ")"
